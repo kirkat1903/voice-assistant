@@ -1,0 +1,51 @@
+{
+  "wake_word": "",
+  "voice_feedback": true,
+  "recognition_language": "ru-RU",
+
+  "site_aliases": {
+    "ютуб": "youtube.com",
+    "youtube": "youtube.com",
+    "гугл": "google.com",
+    "google": "google.com",
+    "яндекс": "ya.ru",
+    "вконтакте": "vk.com",
+    "вк": "vk.com",
+    "почту": "mail.ru",
+    "почта": "mail.ru",
+    "гмайл": "gmail.com",
+    "гитхаб": "github.com",
+    "github": "github.com",
+    "стим": "store.steampowered.com",
+    "steam": "store.steampowered.com"
+  },
+
+  "app_aliases": {
+    "блокнот": "notepad.exe",
+    "калькулятор": "calc.exe",
+    "паинт": "mspaint.exe",
+    "paint": "mspaint.exe",
+    "проводник": "explorer.exe",
+    "диспетчер задач": "taskmgr.exe",
+    "командная строка": "cmd.exe",
+    "терминал": "wt.exe",
+    "панель управления": "control.exe",
+    "параметры": "ms-settings:",
+    "настройки": "ms-settings:",
+    "word": "winword.exe",
+    "ворд": "winword.exe",
+    "excel": "excel.exe",
+    "эксель": "excel.exe"
+  },
+
+  "system_commands": {
+    "заблокируй экран": "lock",
+    "заблокируй компьютер": "lock",
+    "выключи компьютер": "shutdown",
+    "выключи ПК": "shutdown",
+    "перезагрузи компьютер": "restart",
+    "перезагрузи ПК": "restart",
+    "спящий режим": "sleep",
+    "уйди в спящий режим": "sleep"
+  }
+}
