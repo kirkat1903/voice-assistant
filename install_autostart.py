@@ -7,6 +7,9 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 def pythonw_path():
+    venv_pythonw = Path(__file__).parent / "venv" / "Scripts" / "pythonw.exe"
+    if venv_pythonw.exists():
+        return str(venv_pythonw)
     exe = Path(sys.executable)
     pythonw = exe.parent / "pythonw.exe"
     return str(pythonw) if pythonw.exists() else str(exe)

@@ -1,7 +1,13 @@
 {
-  "wake_word": "",
+  "wake_word": ["айко", "aiko"],
   "voice_feedback": true,
-  "recognition_language": "ru-RU",
+  "recognition_languages": ["ru-RU", "en-US"],
+  "city": "Москва",
+  "widget_enabled": true,
+  "neural_voice": true,
+  "tts_voice": "ru-RU-SvetlanaNeural",
+  "tts_rate": "+5%",
+  "tts_pitch": "+0Hz",
 
   "site_aliases": {
     "ютуб": "youtube.com",
@@ -17,21 +23,32 @@
     "гитхаб": "github.com",
     "github": "github.com",
     "стим": "store.steampowered.com",
-    "steam": "store.steampowered.com"
+    "steam": "store.steampowered.com",
+    "gmail": "gmail.com",
+    "mail": "mail.ru",
+    "vk": "vk.com"
   },
 
   "app_aliases": {
     "блокнот": "notepad.exe",
+    "notepad": "notepad.exe",
     "калькулятор": "calc.exe",
+    "calculator": "calc.exe",
     "паинт": "mspaint.exe",
     "paint": "mspaint.exe",
     "проводник": "explorer.exe",
+    "explorer": "explorer.exe",
     "диспетчер задач": "taskmgr.exe",
+    "task manager": "taskmgr.exe",
     "командная строка": "cmd.exe",
+    "command prompt": "cmd.exe",
     "терминал": "wt.exe",
+    "terminal": "wt.exe",
     "панель управления": "control.exe",
+    "control panel": "control.exe",
     "параметры": "ms-settings:",
     "настройки": "ms-settings:",
+    "settings": "ms-settings:",
     "word": "winword.exe",
     "ворд": "winword.exe",
     "excel": "excel.exe",
@@ -41,11 +58,19 @@
   "system_commands": {
     "заблокируй экран": "lock",
     "заблокируй компьютер": "lock",
+    "lock screen": "lock",
+    "lock computer": "lock",
     "выключи компьютер": "shutdown",
     "выключи ПК": "shutdown",
+    "shut down": "shutdown",
+    "shutdown": "shutdown",
     "перезагрузи компьютер": "restart",
     "перезагрузи ПК": "restart",
+    "restart computer": "restart",
+    "reboot": "restart",
     "спящий режим": "sleep",
-    "уйди в спящий режим": "sleep"
+    "уйди в спящий режим": "sleep",
+    "sleep mode": "sleep",
+    "go to sleep": "sleep"
   }
 }

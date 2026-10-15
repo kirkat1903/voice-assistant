@@ -1,4 +1,20 @@
 .venv/
+venv/
 .idea/
+.claude/
 __pycache__/
 *.pyc
+
+# runtime artifacts (created while the assistant runs)
+state.json
+state.tmp
+pending_search.txt
+assistant.log*
+tts_cache/
+screenshots/
+*.part
+main_run.log
+
+# unrelated projects that live in the same folder
+distraction_guard/
+browser_extension/
