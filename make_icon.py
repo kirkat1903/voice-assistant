@@ -44,7 +44,7 @@ def vertical_gradient(size, top, bottom):
     return Image.composite(Image.new("RGBA", (size, size), bottom), Image.new("RGBA", (size, size), top), grad)
 
 
-def render(size=1024, detailed=True):
+def render(size=1024, detailed=True, sparkles=True):
     R = size * 0.47
     mid = size / 2
 
@@ -81,6 +81,8 @@ def render(size=1024, detailed=True):
         stars = [(0.47, 0.54, 0.285, 3.0), (0.745, 0.285, 0.105, 3.0)]
     else:
         stars = [(0.50, 0.50, 0.34, 2.6)]
+    if not sparkles:
+        stars = []
     spark = Image.new("L", (size, size), 0)
     for sx, sy, sr, k in stars:
         spark = ImageChops.lighter(spark, sparkle_mask(size, sx * size, sy * size, sr * size, k))

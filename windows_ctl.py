@@ -229,18 +229,55 @@ def maximize(wins):
 
 
 def bring_to_front(hwnd):
+    """Give `hwnd` the keyboard focus. Windows often refuses this to a background process, so try
+    progressively more forceful ways. Returns True once the window really is in the foreground."""
     if win32gui.IsIconic(hwnd):
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-    try:
+
+    def direct():
         win32gui.SetForegroundWindow(hwnd)
-    except Exception:
-        # Windows refuses focus changes from background processes; a bare Alt press lifts the lock.
+
+    def attach_input():
+        # Share the input queue with the current foreground thread: then the focus change is allowed.
+        fg = win32gui.GetForegroundWindow()
+        fg_tid = win32process.GetWindowThreadProcessId(fg)[0] if fg else 0
+        cur_tid = win32api.GetCurrentThreadId()
+        attached = bool(fg_tid) and fg_tid != cur_tid and win32process.AttachThreadInput(cur_tid, fg_tid, True)
+        try:
+            win32gui.BringWindowToTop(hwnd)
+            win32gui.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                win32process.AttachThreadInput(cur_tid, fg_tid, False)
+
+    def switch_to_this():
+        ctypes.windll.user32.SwitchToThisWindow(hwnd, True)
+
+    def minimize_restore():
+        # Restoring a window is an activation Windows allows even while a fullscreen game owns the
+        # foreground (the only method that worked in that case).
+        win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+        time.sleep(0.25)
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        time.sleep(0.15)
+
+    def alt_tap():
+        # Last resort: a synthetic key press makes this process the last input owner. It is sent to
+        # whatever has focus right now, so it goes last.
         win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
         win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+        win32gui.SetForegroundWindow(hwnd)
+
+    for strategy in (direct, minimize_restore, switch_to_this, attach_input, alt_tap):
         try:
-            win32gui.SetForegroundWindow(hwnd)
+            strategy()
         except Exception:
-            log.warning("Не удалось вывести окно на передний план: %s", win32gui.GetWindowText(hwnd))
+            pass
+        time.sleep(0.08)
+        if win32gui.GetForegroundWindow() == hwnd:
+            return True
+    log.warning("Не удалось вывести окно на передний план: %s", win32gui.GetWindowText(hwnd))
+    return False
 
 
 def minimize_all():
@@ -258,12 +295,17 @@ def send_hotkey(*keys):
     Russian layout too: Ctrl+W is the physical W key whatever letter the layout puts on it.
     """
     codes = [VK_NAMES[k] if k in VK_NAMES else ord(k.upper()) for k in keys]
-    for code in codes:
-        win32api.keybd_event(code, win32api.MapVirtualKey(code, 0), 0, 0)
-    time.sleep(0.03)
-    for code in reversed(codes):
-        win32api.keybd_event(code, win32api.MapVirtualKey(code, 0), win32con.KEYEVENTF_KEYUP, 0)
-    time.sleep(0.03)
+    pressed = []
+    try:
+        for code in codes:
+            win32api.keybd_event(code, win32api.MapVirtualKey(code, 0), 0, 0)
+            pressed.append(code)
+        time.sleep(0.03)
+    finally:
+        # never leave Ctrl/Shift stuck down, even if something above raised
+        for code in reversed(pressed):
+            win32api.keybd_event(code, win32api.MapVirtualKey(code, 0), win32con.KEYEVENTF_KEYUP, 0)
+        time.sleep(0.03)
 
 
 def paste_text(text):
@@ -308,14 +350,44 @@ def tab_keys_for(win):
     return TAB_KEYS.get(win["exe"])
 
 
-def tab_action(action):
-    """Send a tab shortcut to the foreground window. Returns True/False, or None if the app has no tabs."""
+def tab_target():
+    """The window tab commands should act on: the foreground tabbed app, otherwise the browser
+    window used most recently (EnumWindows walks the z-order from the top)."""
     win = foreground_window()
-    keys = tab_keys_for(win)
-    if keys is None:
+    if tab_keys_for(win):
+        return win
+    for candidate in list_windows():
+        if candidate["exe"] in BROWSER_EXES:
+            return candidate
+    return None
+
+
+def _wait_foreground(hwnd, timeout=1.2):
+    end = time.time() + timeout
+    while time.time() < end:
+        fg = foreground_window()
+        if fg and fg["hwnd"] == hwnd:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def tab_action(action):
+    """Run a tab shortcut (close/new/next/prev/reopen) in the right window.
+
+    Returns True on success, False if the shortcut is unsupported or the window refused focus,
+    None if there is no tabbed app (no browser open) at all."""
+    win = tab_target()
+    if win is None:
         return None
-    combo = keys.get(action)
+    combo = tab_keys_for(win).get(action)
     if combo is None:
         return False
+    fg = foreground_window()
+    if not fg or fg["hwnd"] != win["hwnd"]:
+        if not bring_to_front(win["hwnd"]) and not _wait_foreground(win["hwnd"]):
+            log.warning("Вкладки: окно %s не получило фокус", win["exe"])
+            return False
+        time.sleep(0.15)
     send_hotkey(*combo)
     return True

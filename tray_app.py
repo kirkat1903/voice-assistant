@@ -37,6 +37,8 @@ ICO_PATH = Path(__file__).parent / "icon.ico"
 WIDGET_SCRIPT = Path(__file__).parent / "widget.py"
 MUTEX_NAME = "Global\\VoiceAssistant_Айко_SingleInstance"
 SM_CXSMICON = 49
+WIDGET_USER_CLOSED = 10      # exit code of widget.py when the user clicked its close button
+SHOW_EVENT_NAME = "Local\\AikoAssistantShowWidget"
 
 
 def tray_icon_size():
@@ -88,6 +90,8 @@ class TrayApp:
         self.assistant = VoiceAssistant(self.config)
         self.thread = None
         self.widget_process = None
+        self.widget_wanted = False
+        self._quit = False
         self.icon = SharpIcon(
             "voice_assistant",
             ICON_ACTIVE,
@@ -121,10 +125,40 @@ class TrayApp:
 
     def toggle_widget(self, icon, item):
         if self._widget_running():
+            self.widget_wanted = False
             self.widget_process.terminate()
             self.widget_process = None
         else:
+            self.widget_wanted = True
             self.start_widget()
+
+    def _widget_watchdog(self):
+        """Restart the widget if it dies on its own; a close by the user (exit code 10) is respected."""
+        restarts = []
+        while not self._quit:
+            time.sleep(2)
+            proc = self.widget_process
+            if not self.widget_wanted or proc is None:
+                continue
+            code = proc.poll()
+            if code is None:
+                continue
+            if code == WIDGET_USER_CLOSED:
+                log.info("Виджет закрыт пользователем")
+                self.widget_wanted = False
+                continue
+            now = time.time()
+            restarts = [t for t in restarts if now - t < 120]
+            if len(restarts) >= 5:
+                log.error("Виджет падает слишком часто — больше не перезапускаю (см. widget.log)")
+                self.widget_wanted = False
+                continue
+            restarts.append(now)
+            log.warning("Виджет завершился (код %s) — перезапускаю", code)
+            try:
+                self.start_widget()
+            except Exception:
+                log.exception("Не удалось перезапустить виджет")
 
     def toggle_pause(self, icon, item):
         if self.assistant.paused:
@@ -159,23 +193,46 @@ class TrayApp:
         threading.Thread(target=self._icon_sync_loop, daemon=True, name="icon-sync").start()
 
     def quit_app(self, icon, item):
+        self._quit = True
+        self.widget_wanted = False
         self.assistant.stop()
         if self._widget_running():
             self.widget_process.terminate()
         icon.stop()
 
+    def _show_widget_listener(self):
+        """A second launch (the desktop shortcut) signals this event: bring the widget back."""
+        event = win32event.CreateEvent(None, False, False, SHOW_EVENT_NAME)
+        while not self._quit:
+            if win32event.WaitForSingleObject(event, 1000) == win32event.WAIT_OBJECT_0:
+                log.info("Повторный запуск (ярлык): возвращаю виджет")
+                self.widget_wanted = True
+                if not self._widget_running():
+                    try:
+                        self.start_widget()
+                    except Exception:
+                        log.exception("Не удалось запустить виджет по ярлыку")
+
     def run(self):
+        threading.Thread(target=self._show_widget_listener, daemon=True, name="show-widget").start()
         self.start_thread()
         threading.Thread(target=self._icon_sync_loop, daemon=True, name="icon-sync").start()
         if self.config.get("widget_enabled", True):
+            self.widget_wanted = True
             self.start_widget()
+        threading.Thread(target=self._widget_watchdog, daemon=True, name="widget-watchdog").start()
         self.icon.run()
 
 
 if __name__ == "__main__":
     mutex = win32event.CreateMutex(None, False, MUTEX_NAME)
     if win32api.GetLastError() == ERROR_ALREADY_EXISTS:
-        log.warning("Уже запущена другая копия — выхожу")
+        log.info("Айко уже работает — прошу показать виджет и выхожу")
+        try:
+            event = win32event.OpenEvent(win32event.EVENT_MODIFY_STATE, False, SHOW_EVENT_NAME)
+            win32event.SetEvent(event)
+        except Exception:
+            log.exception("Не удалось передать запрос работающей копии")
         sys.exit(0)
     log.info("Запуск (python %s, pid %d)", sys.version.split()[0], os.getpid())
     try:

@@ -11,7 +11,7 @@ import time
 import webbrowser
 from difflib import get_close_matches
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 
 import pyaudio
 import requests
@@ -23,8 +23,10 @@ import win32gui
 import win32process
 from PIL import ImageGrab
 
+import claude_link
 import windows_ctl as wc
-from tts_engine import NeuralVoice
+from companion import CRISIS_MESSAGE, CRISIS_RE, Companion, CompanionUnavailable, split_for_speech
+from tts_engine import NeuralVoice, play_mp3
 
 log = logging.getLogger("aiko")
 
@@ -34,16 +36,138 @@ FOREGROUND_WORDS = {
 }
 TAB_WORDS = {"вкладку", "эту вкладку", "текущую вкладку", "tab", "this tab", "the tab", "current tab"}
 ALL_WORDS = {"все окна", "окна", "всё", "все", "все окна сразу", "all windows", "everything", "all"}
-TAB_PHRASES = {
-    "new": {"новая вкладка", "открой новую вкладку", "открой вкладку", "открой ещё одну вкладку",
-            "new tab", "open new tab", "open a new tab"},
-    "next": {"следующая вкладка", "следующую вкладку", "переключи вкладку", "переключись на следующую вкладку",
-             "next tab"},
-    "prev": {"предыдущая вкладка", "предыдущую вкладку", "прошлая вкладка", "переключись на предыдущую вкладку",
-             "previous tab", "prev tab"},
-    "reopen": {"верни вкладку", "верни закрытую вкладку", "открой закрытую вкладку", "восстанови вкладку",
-               "восстанови закрытую вкладку", "reopen tab", "reopen closed tab"},
+NOT_TAB_COMMAND_PREFIXES = ("найди", "поищи", "find", "search", "запиши", "напомни", "remind", "объясни", "расскажи")
+
+
+def _tab_intent(text):
+    """Understand any phrasing about tabs: «закрой текущую вкладку в браузере», «открой новую
+    вкладку», «следующая вкладка», «верни закрытую вкладку», «close this tab»…"""
+    if text.startswith(NOT_TAB_COMMAND_PREFIXES):
+        return None
+    if "вкладк" not in text and not re.search(r"\btabs?\b", text):
+        return None
+    if re.search(r"верни|восстанов|reopen|restore", text):
+        return "reopen"
+    if re.search(r"закр|убери|удали|close", text):
+        return "close"
+    if re.search(r"следующ|дальше|next", text):
+        return "next"
+    if re.search(r"предыдущ|прошл|назад|previous|prev", text):
+        return "prev"
+    if re.search(r"нов|откр|созда|добав|new|open", text):
+        return "new"
+    return None
+
+
+CHAT_START_RE = re.compile(
+    r"\b(?:поговор\w*|пообща\w*|выговорить\w*|побудь со мной|(?:хочу|давай|нужно|надо) (?:поговор\w*|выговорить\w*|пообща\w*)|"
+    r"мне нужна (?:поддержка|помощь)|мне нужен (?:друг|собеседник)|как (?:твои )?дела|как ты(?: там)?)\b")
+INVITE_RE = re.compile(
+    r"\b(?:поговор\w*|пообща\w*|выговорить\w*|побудь со мной|мне нужн\w+ (?:друг|собеседник)|мне нужна поддержка)\b")
+EMOTION_RE = re.compile(
+    r"\bмне (?:очень |так |как-то |что-то )?(?:грустно|плохо|тревожно|страшно|одиноко|тяжело|обидно|больно|не по себе|"
+    r"скучно|тоскливо)\b|"
+    r"\bя (?:очень |так |ужасно )?(?:устала|расстроена|расстроилась|переживаю|волнуюсь|злюсь|плачу|боюсь|скучаю|"
+    r"не справляюсь|выгорела|заболела)\b|"
+    r"\bу меня (?:стресс|паника|тревога|депрессия|плохое настроение|ужасный день|тяжёлый день|тяжелый день)\b|"
+    r"\b(?:накрыла|накрыл[оа]) (?:тревога|паника|грусть|тоска)\b|не могу уснуть|мне нужна поддержка|"
+    r"\bвсё надоело|\bвсе надоело|\bнет сил\b|\bничего не хочу\b|\bпоссорилась\b|\bрасстались\b")
+CHAT_END_RE = re.compile(
+    r"^(?:хватит|достаточно|давай (?:закончим|на этом закончим)|закончим|закончи разговор|выйди из режима разговора|"
+    r"мне уже лучше|спасибо,? (?:пока|на сегодня|достаточно|мне уже лучше|что выслушала)|(?:всё|все),? пока|"
+    r"пока(?:,? айко)?|до свидания|я пойду|мне пора|спокойной ночи)\b")
+RESET_RE = re.compile(r"\b(?:забудь|сотри|очисти|удали)\b.*\b(?:разговор\w*|историю|всё что я (?:говорила|рассказывала)|нашу беседу)\b")
+BREATHING_RE = re.compile(
+    r"\b(?:давай подышим|подыши со мной|подышим|дыхательн\w+ (?:практик\w*|упражнени\w*)|упражнени\w+ на дыхание|"
+    r"успокой меня|помоги (?:мне )?успокоиться|хочу успокоиться)\b")
+
+# «посмотри на экран», «что у меня на экране», «отправь скриншот Клоду» — скриншот уходит в Claude
+SCREEN_ASK_RE = re.compile(
+    r"\b(?:(?:посмотри|глянь|взгляни)\s+(?:на\s+)?(?:мой\s+|этот\s+)?экран\w*|"
+    r"что\s+(?:у\s+меня\s+)?(?:сейчас\s+)?на\s+экране|"
+    r"(?:отправь|покажи|скинь|пришли|отдай)\s+(?:мой\s+)?(?:экран|скриншот)\w*(?:\s+(?:клод\w*|клауд\w*|claude))?|"
+    r"(?:спроси|покажи)\s+(?:у\s+)?(?:клод\w*|клауд\w*|claude))")
+
+LATIN_NAME_RE = re.compile(r"^[a-z']{2,8}$")
+# First words of genuine English commands. Any *other* short Latin word at the start is Google
+# mis-hearing the name «Айко» («icon», «icom», «iko»…) and counts as calling her.
+ENGLISH_COMMAND_WORDS = {
+    "open", "launch", "start", "run", "find", "search", "go", "new", "next", "previous", "prev", "play", "pause",
+    "mute", "volume", "close", "minimize", "maximize", "restore", "kill", "force", "what", "what's", "set",
+    "remind", "change", "edit", "update", "show", "screenshot", "exit", "stop", "quit", "bye", "goodbye", "lock",
+    "shutdown", "shut", "restart", "reboot", "sleep", "weather", "exchange", "brighter", "darker", "undo",
+    "reopen", "this", "current", "the", "tab", "tabs", "take", "turn", "skip",
 }
+
+MUSIC_VERB_RE = re.compile(
+    r"^(?:включи|включай|включите|поставь|поставьте|сыграй|играй|врубай|play)\s+(?:(?:мне|нам|пожалуйста)\s+)*(.*)$")
+MUSIC_NOUN_RE = re.compile(
+    r"\b(?:музык\w*|музон\w*|песн\w*|трек\w*|клип\w*|плейлист\w*|радио|альбом\w*|композици\w*|мелоди\w*|саундтрек\w*|music|songs?|tracks?|playlists?)\b")
+MUSIC_FILLER_RE = re.compile(
+    r"\b(?:какую|какое|какие|любую|любое|что|чего|нибудь|группы|группу|исполнителя|артиста|певца|певицу|от|мне|нам|пожалуйста)\b")
+MUSIC_MOODS = (
+    (r"\bспокойн|\bрасслаб|\bрелакс|\bтих", "спокойная расслабляющая музыка"),
+    (r"\bвес[её]л|\bбодр|\bэнергичн|\bзаряжа|\bтанцева", "бодрая энергичная музыка"),
+    (r"\bгрустн", "грустная музыка"),
+    (r"\bромантич", "романтическая музыка"),
+    (r"для работы|для учёбы|для учебы|концентр|\bфонов", "музыка для концентрации"),
+    (r"для сна|на ночь|засып", "музыка для сна"),
+    (r"\blo-?fi|\bлоу-?фай|\bлофи", "lofi hip hop radio"),
+    (r"\bрок\w*", "рок музыка хиты"),
+    (r"\bджаз\w*", "джаз музыка"),
+    (r"\bклассик\w*|\bклассическ\w*", "классическая музыка"),
+    (r"\bрэп\w*|\bреп\b|\bхип-?хоп\w*", "рэп хиты"),
+    (r"\bпоп\b|\bпоп-?музык\w*", "поп музыка хиты"),
+    (r"\bэлектрон\w*|\bтехно\b|\bхаус\b", "электронная музыка"),
+    (r"\bсаундтрек\w*|\bиз фильм\w*", "саундтреки из фильмов"),
+    (r"\bигров\w*|\bгейминг\w*", "музыка для игр"),
+)
+YT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+    "Accept-Language": "ru-RU,ru;q=0.9",
+    "Cookie": "CONSENT=YES+1",
+}
+
+
+def _music_query(text, known_names):
+    """None: not a music request. "": «just play something». Otherwise a search query."""
+    m = MUSIC_VERB_RE.match(text)
+    if not m:
+        return None
+    verb, rest = text.split()[0], m.group(1).strip()
+    if not rest or rest in known_names:
+        return None
+    mood = next((q for pattern, q in MUSIC_MOODS if re.search(pattern, rest)), None)
+    has_noun = bool(MUSIC_NOUN_RE.search(rest))
+    generic = rest.startswith(("что-нибудь", "что нибудь", "чего-нибудь"))
+    if not (has_noun or mood or generic or verb in ("сыграй", "играй")):
+        return None
+    if mood:
+        return mood
+    cleaned = MUSIC_FILLER_RE.sub(" ", MUSIC_NOUN_RE.sub(" ", rest)).replace("-", " ")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _deg_word(n):
+    n = abs(n)
+    if 11 <= n % 100 <= 14:
+        return "градусов"
+    return {1: "градус", 2: "градуса", 3: "градуса", 4: "градуса"}.get(n % 10, "градусов")
+
+
+def _humanize_weather(raw):
+    """«Красноярск: Пасмурно, +4°C» -> «Красноярск: пасмурно, плюс 4 градуса» (reads well aloud)."""
+    def repl(m):
+        n = int(m.group(2))
+        sign = "" if n == 0 else {"+": "плюс ", "-": "минус ", "−": "минус "}.get(m.group(1), "")
+        return f"{sign}{n} {_deg_word(n)}"
+
+    text = re.sub(r"([+\-−]?)(\d+)\s*°\s*C", repl, raw)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    head, sep, tail = text.partition(": ")
+    return head + sep + tail[:1].lower() + tail[1:] if sep else text
+
+
 RESTORE_PHRASES = {
     "верни окна", "верни все окна", "восстанови окна", "восстанови все окна", "покажи окна",
     "restore windows", "undo minimize",
@@ -132,7 +256,36 @@ PHRASES = {
         "Копаюсь в настройках, не переключайся.",
         "Момент, собираю всё воедино.",
     ],
+    "chat_start": [
+        "Конечно, я рядом. Как ты себя чувствуешь?",
+        "Я тебя слушаю. Что у тебя на душе?",
+        "Давай поговорим. Расскажи, как прошёл твой день?",
+    ],
+    "chat_end": [
+        "Я рада, что мы поговорили. Береги себя, а если захочется — просто позови меня.",
+        "Хорошо. Спасибо, что поделилась со мной. Я всегда готова поговорить.",
+        "Договорились. Отдыхай и будь к себе добра. Я рядом, если что.",
+    ],
 }
+
+NO_AI_MESSAGE = ("Чтобы по-настоящему разговаривать с тобой, мне нужен доступ к ИИ-модели. Нужно один раз добавить "
+                 "ключ, инструкция в файле README. А пока могу помочь подышать: скажи «Айко, давай подышим».")
+COMPANION_ERRORS = {
+    "bad_key": "Ключ доступа не подошёл. Проверь его и добавь заново командой set_api_key.",
+    "forbidden": "Сервис не пускает меня с этого адреса. Попробуй включить VPN и повтори.",
+    "network": "Не получается связаться с ИИ. Проверь интернет или VPN.",
+    "rate": "Сейчас слишком много запросов, давай чуть позже.",
+    "server": "У сервиса сейчас сбой, давай поговорим чуть позже.",
+    "no_model": "Модель на этом компьютере ещё не скачана. Команда для скачивания есть в файле README.",
+}
+# (what Aiko says, seconds to wait afterwards): a slow 4-4-6 breathing exercise
+BREATHING_INTRO = "Давай подышим вместе. Сядь поудобнее и расслабь плечи. Дыши в моём ритме."
+BREATHING_CYCLE = (
+    ("Вдох носом. Раз, два, три, четыре.", 0.5),
+    ("Задержи дыхание. Два, три, четыре.", 0.5),
+    ("И медленный выдох. Два, три, четыре, пять, шесть.", 1.5),
+)
+BREATHING_OUTRO = "Вот и хорошо. Ты молодец. Как ты себя чувствуешь?"
 
 
 def _pick(category):
@@ -198,6 +351,28 @@ class VoiceAssistant:
         self._last_text = ""
         self._volume = 0.0
         self._level_thread = None
+        self._activity = "idle"      # idle / thinking / speaking: drives the pet in the widget
+        self._mood = None            # transient reaction: heard / happy / confused / sad
+        self._mood_ts = 0.0
+        self.chat_mode = False       # a friendly conversation is going on: no need to say «Айко» each time
+        self.chat_last = 0.0
+        self._companion = None
+        self._weather_cache = {}     # city -> (time, text): weather is re-fetched at most every 10 minutes
+        self._yt_cache = {}          # search query -> YouTube video id
+
+    def _set_mood(self, mood):
+        self._mood = mood
+        self._mood_ts = time.time()
+        self._write_state()
+
+    def _react(self, text):
+        """Let the pet react to what is being said, even when the answer is muted."""
+        if text in PHRASES["confirmation"] or text in PHRASES["greeting"]:
+            self._set_mood("happy")
+        elif text in PHRASES["not_understood"] or text in PHRASES["clarifying"]:
+            self._set_mood("confused")
+        elif any(text.startswith(p) for p in PHRASES["error"]):
+            self._set_mood("sad")
 
     def _speak_system(self, text):
         """Offline fallback: the built-in Windows SAPI voice."""
@@ -219,19 +394,31 @@ class VoiceAssistant:
 
     def _speak_audio(self, text):
         with self._speak_lock:
-            if self.neural_voice is not None:
-                try:
-                    self.neural_voice.say(text)
-                    return
-                except Exception as e:
-                    log.warning("Нейроголос недоступен (%s: %s), говорю системным", type(e).__name__, e)
-            self._speak_system(text)
+            try:
+                if self.neural_voice is not None:
+                    try:
+                        self._activity = "thinking"       # synthesizing (can take 1-3 s)
+                        self._write_state()
+                        path = self.neural_voice.prepare(text)
+                        self._activity = "speaking"
+                        self._write_state()
+                        play_mp3(path)
+                        return
+                    except Exception as e:
+                        log.warning("Нейроголос недоступен (%s: %s), говорю системным", type(e).__name__, e)
+                self._activity = "speaking"
+                self._write_state()
+                self._speak_system(text)
+            finally:
+                self._activity = "idle"
+                self._write_state()
 
     def prewarm_voice(self):
         """Synthesize the fixed phrases once so they play instantly and work offline."""
         if self.neural_voice is None:
             return
-        phrases = [GREETING, "Спокойной ночи! Разбуди меня, когда понадоблюсь."]
+        phrases = [GREETING, "Спокойной ночи! Разбуди меня, когда понадоблюсь.", CRISIS_MESSAGE, NO_AI_MESSAGE,
+                   BREATHING_INTRO, BREATHING_OUTRO, *COMPANION_ERRORS.values(), *(p for p, _ in BREATHING_CYCLE)]
         for group in PHRASES.values():
             phrases.extend(group)
         for phrase in phrases:
@@ -243,15 +430,108 @@ class VoiceAssistant:
                 log.info("Прогрев голоса остановлен: %s: %s", type(e).__name__, e)
                 return
 
+    # ---- friend / mini-psychologist ------------------------------------------------------------
+
+    def _companion_obj(self):
+        if not self.config.get("companion_enabled", True):
+            return None
+        if self._companion is None:
+            self._companion = Companion(self.config)
+        return self._companion
+
+    def companion_ready(self):
+        comp = self._companion_obj()
+        return bool(comp and comp.has_credentials())
+
+    def _speak_long(self, text):
+        """Speak a long reply in sentence-sized pieces; the next pieces are synthesised while one plays."""
+        self._last_text = text
+        self._write_state()
+        if not self.config.get("voice_feedback", True):
+            print(f"Ассистент: {text}")
+            return
+        chunks = split_for_speech(text)
+        if self.neural_voice is not None and len(chunks) > 1:
+            def prefetch():
+                for chunk in chunks[1:]:
+                    try:
+                        self.neural_voice.prepare(chunk)
+                    except Exception:
+                        return
+            threading.Thread(target=prefetch, daemon=True).start()
+        print(f"Ассистент: {text}")
+        for chunk in chunks:
+            self._speak_audio(chunk)
+
+    def _end_chat(self):
+        self.chat_mode = False
+        self.speak(_pick("chat_end"))
+
+    def _chat_turn(self, text, start=False):
+        """One turn of the friendly conversation. Replies are always spoken: she is talking to Aiko."""
+        self.chat_last = time.time()
+        if self.chat_mode and CHAT_END_RE.search(text):
+            self._end_chat()
+            return
+        self.chat_mode = True
+        # an invitation without content («давай поговорим») just opens the conversation
+        if start and INVITE_RE.search(text) and len(text.split()) <= 5 and not EMOTION_RE.search(text):
+            self.speak(_pick("chat_start"))
+            return
+        if CRISIS_RE.search(text):
+            self.speak(CRISIS_MESSAGE)                      # immediately, without waiting for the model
+        comp = self._companion_obj()
+        if comp is None or not comp.has_credentials():
+            self.chat_mode = False
+            self.speak(NO_AI_MESSAGE)
+            return
+        self._activity = "thinking"
+        self._write_state()
+        try:
+            reply = comp.reply(text)
+        except CompanionUnavailable as e:
+            log.warning("Собеседник недоступен: %s", e)
+            self._activity = "idle"
+            self.speak(COMPANION_ERRORS.get(e.reason, _pick("error")))
+            return
+        except Exception:
+            log.exception("Ошибка в разговоре")
+            self._activity = "idle"
+            self.speak(_pick("error"))
+            return
+        finally:
+            self._activity = "idle"
+            self._write_state()
+        self.chat_last = time.time()
+        self._speak_long(reply)
+
+    def _breathing(self):
+        """A slow guided breathing exercise (works without any AI access)."""
+        self.chat_last = time.time()
+        self.speak(BREATHING_INTRO)
+        for _ in range(4):
+            for phrase, pause in BREATHING_CYCLE:
+                if self.stopped or self.paused:
+                    return
+                if self.config.get("voice_feedback", True):
+                    self._speak_audio(phrase)
+                self._last_text = phrase
+                self._write_state()
+                time.sleep(pause)
+        self.speak(BREATHING_OUTRO)
+        self.chat_mode = self.companion_ready()               # her answer continues the conversation
+
     def speak(self, text):
         print(f"Ассистент: {text}")
         self._last_text = text
+        self._react(text)
         self._write_state()
         if self.config.get("voice_feedback", True):
             self._speak_audio(text)
 
     def _say(self, text):
         self._last_text = text
+        self._react(text)
         self._write_state()
         if self._current_addressed:
             self.speak(text)
@@ -266,6 +546,9 @@ class VoiceAssistant:
             "last_query": self.last_search_query,
             "paused": self.paused,
             "sleeping": self.sleeping,
+            "activity": self._activity,
+            "mood": self._mood,
+            "mood_ts": self._mood_ts,
             "ts": time.time(),
         }
         try:
@@ -311,7 +594,9 @@ class VoiceAssistant:
         with self.microphone as source:
             self.recognizer.adjust_for_ambient_noise(source, duration=0.4)
             try:
-                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=10)
+                # in a conversation she talks longer and pauses to think
+                self.recognizer.pause_threshold = 1.2 if self.chat_mode else 0.8
+                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=30 if self.chat_mode else 10)
             except sr.WaitTimeoutError:
                 return ""
 
@@ -485,11 +770,15 @@ class VoiceAssistant:
             log.exception("Вкладки: %s", action)
             ok = False
         if ok is None:
-            self._say("Здесь нет вкладок — открой браузер и повтори.")
+            if action == "new":
+                webbrowser.open_new_tab("https://www.google.com")   # no browser open yet: start one
+                self._say(_pick("confirmation"))
+            else:
+                self._say("Не вижу открытого браузера — открой его и повтори.")
         elif ok:
             self._say(_pick("confirmation"))
         else:
-            self._say("Для этой программы такая команда с вкладками не поддерживается.")
+            self._say("Не получилось переключиться на браузер — щёлкни по его окну и повтори.")
 
     def _close_wins(self, wins, label):
         left = wc.close_windows(wins)
@@ -580,10 +869,13 @@ class VoiceAssistant:
 
     def _handle_window_command(self, text, addressed):
         """Returns True if `text` was a window/tab command (handled or politely refused)."""
-        for action, phrases in TAB_PHRASES.items():
-            if text in phrases:
-                self._do_tab(action)
-                return True
+        intent = _tab_intent(text)
+        if intent:
+            if intent == "close" and not addressed:
+                self._say("Чтобы я закрыла вкладку, сначала позови меня: «Айко, закрой вкладку»")
+            else:
+                self._do_tab(intent)
+            return True
         if text in RESTORE_PHRASES:
             self._maximize_command("все окна")
             return True
@@ -619,13 +911,54 @@ class VoiceAssistant:
         filename = shots_dir / f"screenshot_{time.strftime('%Y%m%d_%H%M%S')}.png"
         img = ImageGrab.grab()
         img.save(filename)
+        claude_link.publish_latest(filename)
         return filename
+
+    def _ask_claude_about_screen(self, text, match):
+        """Screenshot → vision model (free Groq; `claude -p` as fallback) → answer aloud."""
+        question = re.sub(r"^[\s,.]*(?:и\s+)?(?:скажи|расскажи|объясни)?[\s,.]*", "", text[match.end():]).strip()
+        if len(question) < 4:
+            question = ""
+        try:
+            path = self.take_screenshot()
+        except Exception:
+            log.exception("Не удалось сделать скриншот")
+            self._say(_pick("error"))
+            return
+        self._say("Смотрю на экран.")
+        box = {}
+
+        def work():
+            try:
+                box["answer"] = claude_link.ask_about_screenshot(path, question)
+            except claude_link.ClaudeLinkError as e:
+                box["error"] = str(e)
+
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        worker.join(12)
+        if worker.is_alive():
+            self._say(_pick("filler"))
+            worker.join(70)
+        if box.get("answer"):
+            log.info("Про экран: %s", box["answer"][:300])
+            self._speak_long(box["answer"])
+            return
+        reason = box.get("error", "failed")
+        self._say({
+            "no_key": "Чтобы я смотрела на экран, нужен ключ Грок. Скриншот сохранён.",
+            "not_installed": "Чтобы я смотрела на экран, нужен ключ Грок. Скриншот сохранён.",
+            "bad_key": "Ключ Грок не подошёл. Скриншот сохранён.",
+            "rate": "Грок просит подождать, слишком много запросов. Попробуй через минуту.",
+            "network": "Не достучалась до интернета. Скриншот сохранён.",
+            "timeout": "Ответ слишком долго идёт. Скриншот сохранён.",
+        }.get(reason, "Не получилось разобрать, что на экране. Скриншот сохранён."))
 
     def get_weather(self, city):
         try:
             resp = requests.get(
                 f"https://wttr.in/{quote_plus(city)}",
-                params={"format": "3", "lang": "ru", "m": ""},
+                params={"format": "%l: %C, %t", "lang": "ru", "m": ""},   # text only: no emoji
                 headers={"User-Agent": "curl"},
                 timeout=6,
             )
@@ -633,6 +966,86 @@ class VoiceAssistant:
             return resp.text.strip()
         except requests.RequestException:
             return None
+
+    def _fetch_with_filler(self, fn, *args, filler_after=1.2):
+        """Run a slow lookup in a worker. A spoken filler is only used if it takes longer than
+        `filler_after` seconds (before, the filler was always spoken first and delayed every answer)."""
+        box = {}
+        worker = threading.Thread(target=lambda: box.update(v=fn(*args)), daemon=True)
+        worker.start()
+        worker.join(filler_after)
+        if worker.is_alive():
+            self._say(_pick("filler"))
+            worker.join(10)
+        return box.get("v")
+
+    def weather_text(self, city):
+        key = city.lower()
+        hit = self._weather_cache.get(key)
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
+        raw = self.get_weather(city)
+        text = _humanize_weather(raw) if raw else None
+        if text:
+            self._weather_cache[key] = (time.time(), text)
+        return text
+
+    def _weather_city(self, text):
+        m = re.search(r"\b(?:в|во|на|для|in)\s+([а-яёa-z][а-яёa-z\- ]*)$", text)
+        city = m.group(1) if m else ""
+        city = re.sub(r"\b(?:сейчас|сегодня|завтра|пожалуйста|вообще|там|у нас|today|now|tomorrow)\b", " ", city)
+        city = re.sub(r"\s+", " ", city).strip()
+        return city or self.config.get("city", "Красноярск")
+
+    def _youtube_first_video(self, query):
+        if query in self._yt_cache:
+            return self._yt_cache[query]
+        try:
+            r = requests.get("https://www.youtube.com/results", params={"search_query": query},
+                             headers=YT_HEADERS, timeout=10)
+            ids = re.findall(r'"videoRenderer":\{"videoId":"([\w-]{11})"', r.text)
+            if ids:
+                self._yt_cache[query] = ids[0]
+                return ids[0]
+        except requests.RequestException as e:
+            log.warning("Поиск на YouTube не удался: %s", e)
+        return None
+
+    def play_music(self, query):
+        """Open music for `query` in the browser; with YouTube the first hit is opened as a Mix so
+        «следующий трек» keeps working. Returns the query that was used."""
+        service = self.config.get("music_service", "youtube")
+        q = query or self.config.get("music_default_query", "популярная музыка подборка")
+        if service == "yandex":
+            webbrowser.open(f"https://music.yandex.ru/search?text={quote_plus(q)}")
+        elif service == "spotify":
+            os.startfile(f"spotify:search:{quote(q)}")
+        else:
+            vid = self._youtube_first_video(q)
+            url = (f"https://www.youtube.com/watch?v={vid}&list=RD{vid}" if vid
+                   else f"https://www.youtube.com/results?search_query={quote_plus(q)}")
+            webbrowser.open(url)
+        return q
+
+    def _handle_music(self, text):
+        known = set(self.config.get("site_aliases", {})) | set(self.config.get("app_aliases", {}))
+        query = _music_query(text, known)
+        if query is None:
+            m = MUSIC_VERB_RE.match(text)
+            rest = m.group(1).strip() if m else ""
+            if rest and rest in known:                          # «включи ютуб» is a site, not music
+                self._say(f"Открываю {rest}")
+                if rest in self.config.get("site_aliases", {}):
+                    self.open_website(rest)
+                elif not self.open_app(rest):
+                    self._say(f"{_pick('error')} Не нашла «{rest}».")
+                return True
+            return False
+        worker = threading.Thread(target=self.play_music, args=(query,), daemon=True)
+        worker.start()                                          # search + open the browser while she answers
+        self._say(f"Включаю {query}" if query else "Включаю музыку")
+        worker.join(12)
+        return True
 
     def get_currency_rate(self, name):
         info = CURRENCY_MAP.get(name.strip().lower())
@@ -728,11 +1141,20 @@ class VoiceAssistant:
             words = text.split()
             if words:
                 first = words[0]
+                strip = 0
                 if first in wake_words or get_close_matches(first, wake_words, n=1, cutoff=0.6):
+                    strip = 1
+                elif len(words) >= 2 and (first + words[1]) in wake_words:
+                    strip = 2                                   # «ай ко»
+                elif len(words) >= 2 and LATIN_NAME_RE.match(first) and first not in ENGLISH_COMMAND_WORDS:
+                    strip = 1                                   # Google heard «Айко» as «icon», «icom»…
+                if strip:
                     addressed = True
-                    text = " ".join(words[1:]).strip()
+                    text = " ".join(words[strip:]).strip()
 
         self._current_addressed = addressed
+        if addressed:
+            self._set_mood("heard")
 
         if self.sleeping:
             if not addressed:
@@ -750,13 +1172,38 @@ class VoiceAssistant:
 
         if addressed and text in SLEEP_PHRASES:
             self.sleeping = True
+            self.chat_mode = False
             self.speak("Спокойной ночи! Разбуди меня, когда понадоблюсь.")
             return
 
         if addressed and text in EXIT_PHRASES:
             self.sleeping = True
+            self.chat_mode = False
             self.speak(_pick("farewell"))
             return
+
+        # --- a friend to talk to
+        if self.chat_mode and not addressed:
+            self._chat_turn(text)
+            return
+        if addressed and RESET_RE.search(text):
+            comp = self._companion_obj()
+            if comp:
+                comp.forget()
+            self._say("Хорошо, я забыла наш разговор.")
+            return
+        if (addressed or self.chat_mode) and BREATHING_RE.search(text):
+            self._breathing()
+            return
+        if addressed and (CHAT_START_RE.search(text) or EMOTION_RE.search(text)):
+            self._chat_turn(text, start=True)
+            return
+
+        if addressed:
+            screen = SCREEN_ASK_RE.search(text)
+            if screen:
+                self._ask_claude_about_screen(text, screen)
+                return
 
         if addressed:
             for phrase, action in self.config.get("system_commands", {}).items():
@@ -800,26 +1247,23 @@ class VoiceAssistant:
                 self._start_timer(seconds, f"Напоминаю: {msg}")
                 return
 
-        weather_prefixes = (
-            "какая погода в ", "погода в ", "погода на ", "weather in ",
-            "какая погода", "погода", "weather",
-        )
-        for trigger in weather_prefixes:
-            if text.startswith(trigger):
-                city = text[len(trigger):].strip() or self.config.get("city", "Москва")
-                self._say(_pick("filler"))
-                result = self.get_weather(city)
-                self._say(result if result else _pick("error"))
-                return
+        if (("погод" in text or text.startswith("weather")) and len(text.split()) <= 9
+                and not text.startswith(NOT_TAB_COMMAND_PREFIXES)):
+            city = self._weather_city(text)
+            result = self._fetch_with_filler(self.weather_text, city)
+            self._say(result if result else _pick("error"))
+            return
 
         currency_triggers = ("какой курс ", "курс ", "exchange rate ")
         for trigger in currency_triggers:
             if text.startswith(trigger):
                 name = text[len(trigger):].replace("валюты", "").strip()
-                self._say(_pick("filler"))
-                result = self.get_currency_rate(name)
+                result = self._fetch_with_filler(self.get_currency_rate, name)
                 self._say(result if result else f"Не знаю курс для «{name}», извини")
                 return
+
+        if self._handle_music(text):
+            return
 
         if text in ("громче", "сделай громче", "увеличь громкость", "volume up"):
             self._key_tap(VK_VOLUME_UP, times=3)
@@ -833,19 +1277,22 @@ class VoiceAssistant:
             self._key_tap(VK_VOLUME_MUTE)
             self._say(_pick("confirmation"))
             return
-        if text in ("пауза", "останови музыку", "поставь на паузу", "pause"):
+        if text in ("пауза", "останови музыку", "поставь на паузу", "pause", "выключи музыку", "хватит музыки",
+                    "поставь паузу", "на паузу", "останови"):
             self._key_tap(VK_MEDIA_PLAY_PAUSE)
             self._say(_pick("confirmation"))
             return
-        if text in ("play", "продолжи", "включи музыку", "воспроизведи"):
+        if text in ("play", "продолжи", "продолжи музыку", "воспроизведи", "продолжай"):
             self._key_tap(VK_MEDIA_PLAY_PAUSE)
             self._say(_pick("confirmation"))
             return
-        if text in ("следующий трек", "дальше трек", "next track", "next"):
+        if text in ("следующий трек", "дальше трек", "next track", "next", "следующая песня", "следующую песню",
+                    "следующий", "другую песню", "переключи песню", "переключи трек", "дальше", "скип", "skip"):
             self._key_tap(VK_MEDIA_NEXT_TRACK)
             self._say(_pick("confirmation"))
             return
-        if text in ("предыдущий трек", "прошлый трек", "previous track", "previous"):
+        if text in ("предыдущий трек", "прошлый трек", "previous track", "previous", "предыдущая песня",
+                    "предыдущую песню", "прошлая песня", "прошлую песню", "верни песню"):
             self._key_tap(VK_MEDIA_PREV_TRACK)
             self._say(_pick("confirmation"))
             return
@@ -935,6 +1382,9 @@ class VoiceAssistant:
                     self._say(f"{_pick('error')} Не нашла «{query}».")
                 return
 
+        if addressed and self.companion_ready():
+            self._chat_turn(text, start=True)          # not a command: talk to her like a friend would
+            return
         self._say(_pick("not_understood"))
 
     def pause(self):
@@ -966,6 +1416,8 @@ class VoiceAssistant:
                 time.sleep(0.3)
                 continue
             try:
+                if self.chat_mode and time.time() - self.chat_last > 300:
+                    self.chat_mode = False                  # silence for 5 minutes: the talk is over
                 self._check_pending_search()
                 text = self.listen()
                 failures = 0
