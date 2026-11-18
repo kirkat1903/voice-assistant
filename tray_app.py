@@ -29,6 +29,7 @@ from pystray._util import serialized_image
 from pystray._util import win32 as pwin32
 from winerror import ERROR_ALREADY_EXISTS
 
+import sprout_link
 from voice_assistant import VoiceAssistant, load_config
 
 log = logging.getLogger("aiko")
@@ -91,6 +92,7 @@ class TrayApp:
         self.thread = None
         self.widget_process = None
         self.widget_wanted = False
+        self.face_sprout = self.config.get("face", "widget") == "sprout"   # лицо Айко — островок Sprout
         self._quit = False
         self.icon = SharpIcon(
             "voice_assistant",
@@ -101,7 +103,8 @@ class TrayApp:
                     "На паузе", self.toggle_pause, checked=lambda item: self.assistant.paused
                 ),
                 pystray.MenuItem(
-                    "Виджет", self.toggle_widget, checked=lambda item: self._widget_running()
+                    "Островок Sprout" if self.face_sprout else "Виджет", self.toggle_widget,
+                    checked=lambda item: self._widget_running()
                 ),
                 pystray.MenuItem("Перезапустить", self.restart),
                 pystray.MenuItem("Выход", self.quit_app),
@@ -113,9 +116,14 @@ class TrayApp:
         self.thread.start()
 
     def _widget_running(self):
+        if self.face_sprout:
+            return sprout_link.sprout_running()
         return self.widget_process is not None and self.widget_process.poll() is None
 
     def start_widget(self):
+        if self.face_sprout:
+            sprout_link.launch_sprout(self.config)        # Sprout сам следит за единственным экземпляром
+            return
         if self._widget_running():
             return
         self.widget_process = subprocess.Popen(
@@ -124,6 +132,12 @@ class TrayApp:
         )
 
     def toggle_widget(self, icon, item):
+        if self.face_sprout:
+            if sprout_link.sprout_running():
+                sprout_link.ask_sprout({"cmd": "quit"})
+            else:
+                sprout_link.launch_sprout(self.config)
+            return
         if self._widget_running():
             self.widget_wanted = False
             self.widget_process.terminate()
@@ -196,8 +210,10 @@ class TrayApp:
         self._quit = True
         self.widget_wanted = False
         self.assistant.stop()
-        if self._widget_running():
+        if self.widget_process is not None and self.widget_process.poll() is None:
             self.widget_process.terminate()
+        if self.assistant._bridge is not None:
+            self.assistant._bridge.stop()
         icon.stop()
 
     def _show_widget_listener(self):
@@ -213,7 +229,12 @@ class TrayApp:
                     except Exception:
                         log.exception("Не удалось запустить виджет по ярлыку")
 
+    def _notify(self, title, text):
+        """Уведомление Windows от значка Айко в трее (видно, даже когда она спит)."""
+        self.icon.notify(text, title)
+
     def run(self):
+        self.assistant.notifier = self._notify
         threading.Thread(target=self._show_widget_listener, daemon=True, name="show-widget").start()
         self.start_thread()
         threading.Thread(target=self._icon_sync_loop, daemon=True, name="icon-sync").start()

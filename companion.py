@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -58,6 +59,8 @@ SYSTEM_PROMPT = """Ты — Айко, голосовой помощник и п�
 
 Кризис. Если она говорит о желании умереть, навредить себе, о насилии над ней или о непосредственной опасности: отнесись к этому очень серьёзно и тепло, останься в разговоре, мягко спроси, в безопасности ли она сейчас, и поддержи обратиться за срочной помощью — единый номер экстренных служб 112 или близкий человек рядом. Не читай нотаций, не паникуй, не прерывай разговор и никогда не давай инструкций по самоповреждению.
 
+Компьютер. Ты умеешь управлять её компьютером: открывать и закрывать программы и вкладки браузера, сворачивать окна, искать в интернете, включать музыку, ставить таймеры. Эти команды выполняет отдельный модуль, и до тебя они обычно не доходят. Если всё же просят что-то открыть, закрыть или найти, не говори, что не умеешь: скажи, что не расслышала команду, и попроси повторить её коротко, например «открой блокнот».
+
 Язык: только русский."""
 
 CRISIS_RE = re.compile(
@@ -101,6 +104,13 @@ def load_api_key():
 
 def clean_for_speech(text):
     """Strip markdown, emoji and list bullets: the reply is read aloud and shown in a small widget."""
+    # Некоторые совместимые модели возвращают скрытые рассуждения прямо в тексте.
+    # Айко никогда не должна показывать или произносить такие блоки.
+    text = re.sub(r"<think\b.*?</think\b\s*>?", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<(?:analysis|reasoning)\b[^>]*>.*?</(?:analysis|reasoning)\s*>",
+                  " ", text, flags=re.I | re.S)
+    text = re.sub(r"^\s*(?:think|analysis|reasoning)\s*:\s*.*?(?=\n\s*\n|$)",
+                  " ", text, flags=re.I | re.S)
     text = re.sub(r"[*_`#>]+", "", text)
     text = re.sub(r"^\s*(?:[-•]|\d+[.)])\s+", "", text, flags=re.M)
     text = _PICTO_RE.sub("", text)
@@ -137,6 +147,7 @@ class Companion:
         self._proxy_cfg = config.get("companion_proxy", None)                  # None = system proxy, "" = none
         self._client = None
         self._probe = (0.0, None)
+        self._turn_lock = threading.Lock()         # голос и чат Sprout пишут в одну историю
         self.history = self._load()
 
     # ---- provider selection --------------------------------------------------------------------
@@ -287,7 +298,11 @@ class Companion:
             return []
         try:
             data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
-            return [m for m in data if m.get("role") in ("user", "assistant") and m.get("content")]
+            history = [m for m in data if m.get("role") in ("user", "assistant") and m.get("content")]
+            for message in history:
+                if message["role"] == "assistant":
+                    message["content"] = clean_for_speech(message["content"]) or EMPTY_REPLY
+            return history
         except (OSError, ValueError):
             return []
 
@@ -315,6 +330,10 @@ class Companion:
     # ---- the turn ------------------------------------------------------------------------------
 
     def reply(self, user_text):
+        with self._turn_lock:
+            return self._reply(user_text)
+
+    def _reply(self, user_text):
         provider = self.provider()
         if provider is None:
             raise CompanionUnavailable("no_key")
@@ -329,6 +348,10 @@ class Companion:
             self.history.pop()                           # never keep an unanswered turn
             raise
         reply = clean_for_speech(raw) or EMPTY_REPLY
+        # Голосовой ответ должен оставаться коротким даже при сбое инструкции модели.
+        if len(reply) > 650:
+            cut = max(reply.rfind(mark, 0, 650) for mark in (".", "!", "?", "…"))
+            reply = (reply[:cut + 1] if cut >= 200 else reply[:647] + "…").strip()
         self.history.append({"role": "assistant", "content": reply})
         self._save()
         return reply

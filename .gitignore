@@ -10,6 +10,7 @@ state.json
 state.tmp
 pending_search.txt
 widget_pos.json
+location.json
 widget.log
 secrets.json
 chat_history.json
@@ -22,3 +23,7 @@ main_run.log
 # unrelated projects that live in the same folder
 distraction_guard/
 browser_extension/
+
+# Sprout build artifacts
+sprout/build/
+sprout/build2/

@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import threading
+import urllib.request
 from pathlib import Path
 
 import win32api
@@ -13,7 +14,7 @@ log = logging.getLogger("aiko")
 CACHE_DIR = Path(__file__).parent / "tts_cache"
 MAX_CACHE_FILES = 300
 MAX_CACHED_CHARS = 120
-SYNTH_TIMEOUT = 10
+SYNTH_TIMEOUT = 25
 
 _winmm = ctypes.windll.winmm
 _alias_counter = 0
@@ -66,11 +67,23 @@ class NeuralVoice:
         import edge_tts
 
         tmp = target.with_suffix(".part")
-        communicate = edge_tts.Communicate(text, self.voice, rate=self.rate, pitch=self.pitch)
-        await asyncio.wait_for(communicate.save(str(tmp)), timeout=SYNTH_TIMEOUT)
-        if not tmp.exists() or tmp.stat().st_size == 0:
-            raise RuntimeError("пустой ответ синтезатора")
-        os.replace(tmp, target)
+        proxy = urllib.request.getproxies().get("https")
+        routes = (None, proxy) if proxy else (None,)
+        for route in routes:
+            try:
+                communicate = edge_tts.Communicate(
+                    text, self.voice, rate=self.rate, pitch=self.pitch, proxy=route,
+                )
+                await asyncio.wait_for(communicate.save(str(tmp)), timeout=SYNTH_TIMEOUT)
+                if not tmp.exists() or tmp.stat().st_size == 0:
+                    raise RuntimeError("пустой ответ синтезатора")
+                os.replace(tmp, target)
+                return
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                if route == routes[-1]:
+                    raise
+                log.warning("Прямое соединение с нейроголосом недоступно, пробую прокси")
 
     def prepare(self, text):
         """Return path to an mp3 for `text`, synthesizing it if it is not cached."""

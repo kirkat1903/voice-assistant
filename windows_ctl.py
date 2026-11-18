@@ -53,6 +53,13 @@ SPOKEN_APPS = {
     "спотифай": {"spotify.exe"}, "spotify": {"spotify.exe"},
     "зум": {"zoom.exe"}, "zoom": {"zoom.exe"},
     "код": {"code.exe"}, "vs code": {"code.exe"}, "vscode": {"code.exe"},
+    "чат gpt": {"chatgpt.exe"}, "чат джипити": {"chatgpt.exe"}, "chat gpt": {"chatgpt.exe"},
+    "чат жпт": {"chatgpt.exe"}, "чат джи пи ти": {"chatgpt.exe"}, "chatgpt": {"chatgpt.exe"},
+    "кап кат": {"capcut.exe"}, "капкат": {"capcut.exe"}, "capcut": {"capcut.exe"},
+    "да винчи": {"resolve.exe"}, "давинчи": {"resolve.exe"}, "davinci resolve": {"resolve.exe"},
+    "докер": {"docker desktop.exe"}, "docker desktop": {"docker desktop.exe"},
+    "визуал студио код": {"code.exe"}, "вс код": {"code.exe"}, "visual studio code": {"code.exe"},
+    "клоуд": {"claude.exe"}, "клод": {"claude.exe"}, "claude": {"claude.exe"},
     "пайчарм": {"pycharm64.exe"}, "pycharm": {"pycharm64.exe"},
 }
 
@@ -171,6 +178,10 @@ def find_windows(query, config_aliases=None):
     if not q:
         return []
     exes = set(SPOKEN_APPS.get(q, ()))
+    if not exes:
+        closest = max(SPOKEN_APPS, key=lambda name: SequenceMatcher(None, q, name).ratio())
+        if SequenceMatcher(None, q, closest).ratio() >= 0.72:
+            exes.update(SPOKEN_APPS[closest])
     target = (config_aliases or {}).get(q)
     if target and target.lower().endswith(".exe"):
         exes.add(Path(target).name.lower())
