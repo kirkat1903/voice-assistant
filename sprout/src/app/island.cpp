@@ -356,7 +356,7 @@ std::wstring SayChats() {
     for (auto& c : G.chats.All()) {
         if (c.seen || n >= 3) continue;
         if (c.kind == ChatKind::Info) continue;
-        const std::wstring app = c.codex ? L"Codex" : L"Claude";
+        const std::wstring app = L"Codex";
         out += (out.empty() ? L"" : L" ") + (c.kind == ChatKind::Waiting
                                                ? L"В чате «" + c.title + L"» " + app + L" ждёт твоего ответа."
                                                : L"В чате «" + c.title + L"» " + app + L" закончил работу.");
@@ -412,7 +412,7 @@ void HandleCommand(CommandCtx& ctx) {
         if (!p) {
             const ChatItem* c = G.chats.LatestUnseen(ChatKind::Waiting);
             if (c) {
-                const bool opened = c->codex ? FocusCodexApp() : FocusClaudeApp();
+                const bool opened = FocusCodexApp();
                 say = L"Чат «" + c->title + L"» ждёт ответа. " +
                       (opened ? L"Открыла приложение." : L"Не удалось найти окно приложения.");
             } else {
@@ -699,7 +699,7 @@ float DrawChats(Graphics& g, bool draw, float L, float y, float W, ULONGLONG now
                 ChatItem* it = G.chats.Find(key);
                 if (it) it->seen = true;
                 PlaySfx(Sfx::Click);
-                if (!(it && it->codex ? FocusCodexApp() : FocusClaudeApp())) PlaySfx(Sfx::Deny);
+                if (!FocusCodexApp()) PlaySfx(Sfx::Deny);
             }});
         }
         y += h + 8;
@@ -776,7 +776,7 @@ float LayoutPanel(Graphics& g, bool draw, const RectF& shape, ULONGLONG now) {
             DrawWrapped(g, msg, G.fText.get(), C_DIM, RectF(L + 12, y + 12, W - 24, h + 2));
         }
         if (needHooks) {
-            Button(g, draw, L + 12, y + 12 + h + 8, 28, L"Установить хуки Claude Code", C_BTN_OK,
+            Button(g, draw, L + 12, y + 12 + h + 8, 28, L"Подключить задачи", C_BTN_OK,
                    [] { InstallHooks(G.hwnd); G.hooksCheckedAt = 0; });
         }
         y += cardH + 10;
@@ -1375,7 +1375,7 @@ LRESULT CALLBACK IslandProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case ID_APIKEY: {
             std::wstring key;
             if (PromptText(nullptr, L"API-ключ Anthropic",
-                           L"Ключ для чата с Claude (console.anthropic.com). Хранится в Диспетчере учётных данных Windows. "
+                           L"Ключ для дополнительного чата. Хранится в Диспетчере учётных данных Windows. "
                            L"Пустое поле — удалить ключ.",
                            key, true))
                 SaveApiKey(key);

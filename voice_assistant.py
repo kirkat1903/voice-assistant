@@ -581,18 +581,17 @@ class VoiceAssistant:
         return True, prefix + reply
 
     def claude_notice(self, kind, project, detail=""):
-        """Sprout сообщает о чате или сессии Claude: уведомление Windows от Айко (всегда, даже во сне)
+        """Sprout сообщает о задаче Codex: уведомление Windows от Айко (всегда, даже во сне)
         и голос (только если Айко не спит и не на паузе)."""
         where = f" в проекте {project}" if project else ""
         chat = f" в чате «{project}»" if project else ""
-        # (вслух — «Клод», чтобы голос читал правильно; в уведомлении — как пишется)
         phrases = {
-            "ask": (f"Клод ждёт твоего разрешения{where}.", f"Claude ждёт твоего разрешения{where}."),
-            "question": (f"У Клода вопрос{where}.", f"У Claude вопрос{where}."),
-            "waiting": (f"Клод ждёт твоего ответа{where}.", f"Claude ждёт твоего ответа{where}."),
-            "done": (f"Клод закончил{where}.", f"Claude закончил задачу{where}."),
-            "chat_wait": (f"Клод ждёт твоего ответа{chat}.", f"Claude ждёт твоего ответа{chat}."),
-            "chat_done": (f"Клод закончил задачу{chat}.", f"Claude закончил задачу{chat}."),
+            "ask": (f"Задача ждёт твоего разрешения{where}.", f"Задача ждёт твоего разрешения{where}."),
+            "question": (f"У агента вопрос{where}.", f"У агента вопрос{where}."),
+            "waiting": (f"Задача ждёт твоего ответа{where}.", f"Задача ждёт твоего ответа{where}."),
+            "done": (f"Задача завершена{where}.", f"Задача завершена{where}."),
+            "chat_wait": (f"Кодекс ждёт твоего ответа{chat}.", f"Codex ждёт твоего ответа{chat}."),
+            "chat_done": (f"Кодекс закончил задачу{chat}.", f"Codex закончил задачу{chat}."),
             "codex_chat_wait": (f"Кодекс ждёт твоего ответа{chat}.", f"Codex ждёт твоего ответа{chat}."),
             "codex_chat_done": (f"Кодекс закончил задачу{chat}.", f"Codex закончил задачу{chat}."),
         }
@@ -614,13 +613,13 @@ class VoiceAssistant:
             threading.Thread(target=self.speak, args=(spoken,), daemon=True).start()
 
     def _claude_command(self, text):
-        """«Айко, что делает Claude / разреши / отклони / вариант два». True — если фраза была про Claude."""
+        """«Айко, что делает Codex / разреши / отклони / вариант два». True для команды про Codex."""
         command = sprout_link.voice_command(text)
         if command is None:
             return False
         answer = sprout_link.ask_sprout(command)
         if answer is None:
-            self._say("Островок Спраут не запущен, мне не видно Клода.")
+            self._say("Островок Спраут не запущен, мне не видно задач.")
         else:
             self._say(sprout_link.spoken(answer.get("say") or _pick("confirmation")))
         return True

@@ -81,7 +81,7 @@ Session& SessionStore::Ensure(const json& e, const json& env, ULONGLONG now) {
     }
     std::string cwd = Str(e, "cwd");
     if (!cwd.empty()) { s->cwd = cwd; s->project = BaseName(cwd); }
-    if (s->project.empty()) s->project = L"Claude Code";
+    if (s->project.empty()) s->project = L"Задача";
     if (env.contains("pids") && env["pids"].is_array()) {
         s->pids.clear();
         for (const auto& p : env["pids"]) if (p.is_number_unsigned()) s->pids.push_back(p.get<DWORD>());
@@ -309,7 +309,7 @@ void SessionStore::Apply(IncomingEvent& ev, ULONGLONG now, Effects& fx) {
                 p.questions.push_back(qq);
             }
             p.chosen.resize(p.questions.size());
-            p.title = L"Claude спрашивает";
+            p.title = L"Агент спрашивает";
             if (p.questions.empty()) p.isQuestion = false;
         }
         if (!p.isQuestion) {

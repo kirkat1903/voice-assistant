@@ -241,6 +241,7 @@ void ChatStore::Update(const std::vector<RawToast>& rows, ULONGLONG now, ChatEff
     std::vector<std::wstring> touched;
 
     for (const RawToast& r : rows) {
+        if (!r.codex) continue;                                             // в интерфейсе показываем только Codex
         present.push_back(r.id);
         const bool isNew = std::find(known_.begin(), known_.end(), r.id) == known_.end();
         if (!isNew) continue;
@@ -248,8 +249,8 @@ void ChatStore::Update(const std::vector<RawToast>& rows, ULONGLONG now, ChatEff
         if (ftNow > r.arrival && ftNow - r.arrival > sixHours) continue;    // слишком старое
 
         std::wstring key = !r.header.empty() ? r.header : r.title;
-        if (key.empty()) key = r.codex ? L"Codex" : L"Claude";
-        key = (r.codex ? L"Codex:" : L"Claude:") + key;
+        if (key.empty()) key = L"Codex";
+        key = L"Codex:" + key;
         ChatItem* c = Find(key);
         if (!c) {
             items_.push_back(ChatItem());
@@ -259,8 +260,8 @@ void ChatStore::Update(const std::vector<RawToast>& rows, ULONGLONG now, ChatEff
         if (c->arrival > r.arrival) continue;                               // пришло что-то новее
         c->title = r.title.empty() ? key : r.title;
         c->text = r.body;
-        c->codex = r.codex;
-        c->kind = r.codex ? ClassifyCodex(r.title, r.body) : Classify(r.body);
+        c->codex = true;
+        c->kind = ClassifyCodex(r.title, r.body);
         c->arrival = r.arrival;
         c->at = now - std::min<ULONGLONG>(now, (ftNow > r.arrival ? (ftNow - r.arrival) / 10000ULL : 0));
         c->ids.push_back(r.id);

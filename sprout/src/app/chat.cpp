@@ -116,7 +116,7 @@ void Send() {
     json body;
     body["model"] = Cfg().model;
     body["max_tokens"] = Cfg().maxTokens;
-    body["system"] = "You are Claude, chatting from Sprout, a small desktop companion for Windows. Be concise and "
+    body["system"] = "You are Aiko, chatting from Sprout, a small desktop companion for Windows. Be concise and "
                      "friendly. Plain text only. Reply in the user's language.";
     body["messages"] = C.history;
     std::string payload = body.dump(-1, ' ', false, json::error_handler_t::replace);

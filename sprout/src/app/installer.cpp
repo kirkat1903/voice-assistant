@@ -159,8 +159,8 @@ void InstallHooks(HWND owner) {
         L"\nХук: " + InstalledHookPath() +
         L"\n\nОстальные настройки и чужие хуки не меняются." +
         (existed ? L" Перед записью будет сделана резервная копия." : L"") +
-        L"\nЕсли Sprout не запущен, хук сразу завершается и Claude Code работает как обычно.\n\nПродолжить?";
-    if (MessageBoxW(owner, prompt.c_str(), L"Установка хуков Claude Code", MB_YESNO | MB_ICONQUESTION) != IDYES)
+        L"\nЕсли Sprout не запущен, подключение не влияет на работу агента.\n\nПродолжить?";
+    if (MessageBoxW(owner, prompt.c_str(), L"Подключение задач к Ростку", MB_YESNO | MB_ICONQUESTION) != IDYES)
         return;
 
     if (!CopyHookExe(owner)) return;
@@ -191,7 +191,7 @@ void InstallHooks(HWND owner) {
         MessageBoxW(owner, L"Не удалось записать settings.json.", L"Sprout", MB_ICONERROR);
         return;
     }
-    std::wstring done = L"Готово! Хуки установлены.\n\nПерезапусти сессии Claude Code, чтобы они подхватили хуки.";
+    std::wstring done = L"Готово! Задачи подключены.\n\nПерезапусти открытые сессии агента.";
     if (!backupPath.empty()) done += L"\n\nРезервная копия:\n" + backupPath;
     MessageBoxW(owner, done.c_str(), L"Sprout", MB_ICONINFORMATION);
 }
