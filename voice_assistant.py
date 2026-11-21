@@ -19,6 +19,7 @@ import speech_recognition as sr
 import win32api
 import win32com.client
 import win32con
+import win32event
 import win32gui
 import win32process
 from PIL import ImageGrab
@@ -32,6 +33,7 @@ from companion import CRISIS_MESSAGE, CRISIS_RE, Companion, CompanionUnavailable
 from tts_engine import NeuralVoice, play_mp3
 
 log = logging.getLogger("aiko")
+RESUME_EVENT_NAME = "Local\\AikoAssistantResume"
 
 FOREGROUND_WORDS = {
     "окно", "это окно", "текущее окно", "программу", "эту программу", "приложение", "это приложение",
@@ -378,6 +380,7 @@ class VoiceAssistant:
         self.microphone = None
         self._tts_fallback = None
         self._speak_lock = threading.Lock()
+        self._resume_event = win32event.CreateEvent(None, False, False, RESUME_EVENT_NAME)
         self.neural_voice = None
         if config.get("neural_voice", True):
             self.neural_voice = NeuralVoice(
@@ -1696,7 +1699,8 @@ class VoiceAssistant:
         failures = 0
         while not self.stopped:
             if self.paused:
-                time.sleep(0.3)
+                if win32event.WaitForSingleObject(self._resume_event, 300) == win32event.WAIT_OBJECT_0:
+                    self.resume()
                 continue
             try:
                 if self.chat_mode and time.time() - self.chat_last > 300:

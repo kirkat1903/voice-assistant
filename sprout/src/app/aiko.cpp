@@ -128,6 +128,14 @@ void AikoNotify(const std::string& kind, const std::wstring& project) {
 }
 
 bool AikoControl(bool listen) {
+    if (listen) {
+        HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Local\\AikoAssistantResume");
+        if (event) {
+            const bool signaled = SetEvent(event) != FALSE;
+            CloseHandle(event);
+            if (signaled) return true;
+        }
+    }
     Link l = CurrentLink();
     if (!l.linked) return false;
     json body = {{"action", listen ? "resume" : "pause"}};

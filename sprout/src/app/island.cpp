@@ -1507,6 +1507,7 @@ HWND CreateIsland(HINSTANCE inst) {
     G.taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     AddTrayIcon();
     StartToastWatcher(G.hwnd);
+    AikoControl(true);                    // повторный запуск Ростка всегда возвращает микрофон Айко
     G.lastActiveAt = GetTickCount64();   // при старте ненадолго показываемся
     G.hooksInstalledCache = HooksInstalled();
     G.hooksCheckedAt = GetTickCount64();
